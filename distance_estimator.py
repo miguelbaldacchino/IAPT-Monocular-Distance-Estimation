@@ -3,7 +3,7 @@ from ultralytics import YOLO
 import json
 import os
 
-VIDEO_PATH        = 'footage1.mp4'
+VIDEO_PATH        = 'footage2.mp4'
 
 KNOWN_HEIGHT_M    = 1.5 
 KNOWN_DIST_M      = None  # e.g. 5.0 metres, or None to prompt
