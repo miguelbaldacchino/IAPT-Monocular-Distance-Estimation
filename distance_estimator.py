@@ -1,176 +1,253 @@
-import cv2
-from ultralytics import YOLO
-import json
 import os
+import json
+import cv2
+import numpy as np
+import tkinter as tk
+from tkinter import filedialog, simpledialog, messagebox
+from PIL import Image, ImageTk
+from ultralytics import YOLO
 
-VIDEO_PATH        = 'footage2.mp4'
-
-KNOWN_HEIGHT_M    = 1.5 
-KNOWN_DIST_M      = None  # e.g. 5.0 metres, or None to prompt
-
-VEHICLE_CLASSES   = [1, 2, 3, 5, 7]  # bicycle, car, motorcycle, bus, truck
-
+# Constants
 CALIBRATION_DIR = 'calibrations'
+VEHICLE_CLASSES = [1, 2, 3, 5, 7]  # bicycle, car, motorcycle, bus, truck
+KNOWN_HEIGHT_M = 1.5
+DEFAULT_VIDEO = 'footage1.mp4'
+BASE_DELAY_MS = 33  # approx for 30 FPS
+SPEED_OPTIONS = [0.25, 1.0, 4.0, 7.0]
+CLOSE_THRESHOLD = 1.5  # metres
+TOO_CLOSE_THRESHOLD = 0.8  # metres
 
-
+# Utility functions
 def save_focal_length(focal_px, name):
     os.makedirs(CALIBRATION_DIR, exist_ok=True)
-    path = os.path.join(CALIBRATION_DIR, f'{name}.json')
-    with open(path, "w") as f:
+    path = os.path.join(CALIBRATION_DIR, f"{name}.json")
+    with open(path, 'w') as f:
         json.dump({'focal_px': focal_px}, f)
-    print(f'Saved - Calibration {name}')
-        
+    messagebox.showinfo('Saved', f'Calibration "{name}" stored.')
 
-def load_focal_length(name):
+def delete_focal(name):
     path = os.path.join(CALIBRATION_DIR, f"{name}.json")
     if os.path.exists(path):
-        with open(path, "r") as f:
-            data = json.load(f)
-            print(f'Loading Calibration {name}.json')
-            return data.get('focal_px')
+        os.remove(path)
+        messagebox.showinfo('Deleted', f'Calibration "{name}" removed.')
     else:
-        print(f"[Load Error] Calibration '{name}' not found.")
-        return None
-    
-def list_focal_lengths():
-    if not os.path.exists(CALIBRATION_DIR):
-        print('Calibration directory not found. Create a new camera.')
-        return None
-    
-    files = [f for f in os.listdir(CALIBRATION_DIR) if f.endswith('.json')]
-    if not files:
-        print('No calibration files found. Create a new camera.')
-        return None
-        
-    print('=== Available Cameras ===\n')
-    for file in files:
-        path = os.path.join(CALIBRATION_DIR, file)
-        with open(path, 'r') as f:
+        messagebox.showerror('Error', f'Camera "{name}" not found.')
+
+def load_focal_list():
+    cams = []
+    if not os.path.isdir(CALIBRATION_DIR):
+        return cams
+    for fn in os.listdir(CALIBRATION_DIR):
+        if fn.endswith('.json'):
+            name = fn[:-5]
             try:
-                data = json.load(f)
-                focal = data.get('focal_px', 'N/A')
-                print(f" - {file.replace('.json', '')}: {focal:.1f}px")
-            except Exception as e:
-                print(f' - {file}: Error reading file >> {e}')
-                return None
-    print('- Or Create a New One (enter 0)\n')
-    return True
-    
-    
-def calibrate_focal_length(frame):
-    # Draw ROI
-    roi = cv2.selectROI("Calibration: Select Reference Object", frame, False, False)
-    cv2.destroyWindow("Calibration: Select Reference Object")
-    x, y, w, h = roi
-    pix_h = h
+                with open(os.path.join(CALIBRATION_DIR, fn)) as f:
+                    data = json.load(f)
+                cams.append((name, data.get('focal_px')))
+            except:
+                pass
+    return cams
 
-    # Prompt for real-world measurements if not provided
-    real_h = KNOWN_HEIGHT_M 
-    real_d = KNOWN_DIST_M  or float(input("Enter distance to object in metres (e.g. 5.0): "))
+def load_focal(name):
+    path = os.path.join(CALIBRATION_DIR, f"{name}.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f).get('focal_px')
+    return None
 
-    # Compute focal length (px)
-    focal_px = (pix_h * real_d) / real_h
-    print(f"[Calibration] Pixel height: {pix_h}px → Focal length = {focal_px:.1f}px")
-    return focal_px
+def estimate_distance(bbox_h, focal, real_h):
+    return (real_h * focal) / max(bbox_h, 1)
 
-def estimate_distance_m(bbox_height_px, focal_px, real_h):
-    return (real_h * focal_px) / max(bbox_height_px, 1)
+def get_rotated_box(x, y, w, h, angle):
+    cx, cy = x + w/2, y + h/2
+    pts = np.array([[-w/2, -h/2], [w/2, -h/2], [w/2, h/2], [-w/2, h/2]])
+    theta = np.deg2rad(angle)
+    R = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+    rot = pts.dot(R.T)
+    box = rot + np.array([cx, cy])
+    return box.astype(int)
 
-def createCamera(calibration_frame):
-    focal_px = calibrate_focal_length(calibration_frame)
-    # Saving
-    saveCamera = input('Would you like to save your camera? Y/N\n')
-    match saveCamera:
-        # Yes
-        case 'Y': 
-            cameraName = input('Name Your Camera\n')
-            save_focal_length(focal_px=focal_px, name=cameraName)
-            return focal_px
-        # No
-        case 'N':
-            return focal_px
-        # Default
-        case _:
-            print('Invalid Input. Restarting')
-            return None
-            
-def main():
-    # Open video
-    cap = cv2.VideoCapture(VIDEO_PATH)
-    if not cap.isOpened():
-        print("Error: cannot open video.")
-        return
+class DistanceEstimatorApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title('Vehicle Distance Estimator')
+        self.geometry('800x600')
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
 
-    # Grab a frame for calibration
-    ret, calib_frame = cap.read()
-    if not ret:
-        print("Error: cannot read frame for calibration.")
-        return
+        # State
+        self.video_path = tk.StringVar(value=DEFAULT_VIDEO)
+        self.focal = None
+        self.real_h = KNOWN_HEIGHT_M
+        self.cap = None
+        self.running = False
+        self.speed = tk.DoubleVar(value=1.0)
+        self.model = YOLO('yolov8n.pt')
 
-    # Focal Length Selection
-    focal_px = 0
-    
-    #List all cameras
-    
-    while True:
-        # Choose focal from list, or create new (0)
-        listFocal = list_focal_lengths()
-        if listFocal == None:
-            print('Creating New Camera')
-            focal_px = createCamera(calib_frame)
-            if focal_px != None:
-                break
-        chosenFocal = input('Choose a Camera, or Create a New One (0)\n')
-        # Create new 
-        if chosenFocal == '0':
-            focal_px = createCamera(calib_frame)
-            if focal_px != None:
-                break
-        # Loading previous Camera
-        focal_px = load_focal_length(chosenFocal)
-        # If camera found
-        if focal_px != None:
-            break
-        else:
-            print('Camera not found. Name might be wrong. Restarting.')
-    print('=== Loading Distance Estimation ===')
-    real_h = KNOWN_HEIGHT_M if KNOWN_HEIGHT_M else float(input("Re-enter real object height (m): "))
-    
-    # Load YOLOv8 model
-    yolo = YOLO('yolov8n.pt')
+        # Video display
+        self.img_label = tk.Label(self)
+        self.img_label.grid(row=0, column=0, sticky='nsew')
 
-    # Process video from start
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    while True:
-        ret, frame = cap.read()
+        # Controls
+        ctrl = tk.Frame(self)
+        ctrl.grid(row=1, column=0, sticky='ew')
+        ctrl.columnconfigure(1, weight=1)
+
+        tk.Label(ctrl, text='Video File:').grid(row=0, column=0, padx=5, pady=5)
+        tk.Entry(ctrl, textvariable=self.video_path).grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        tk.Button(ctrl, text='Browse', command=self.browse_video).grid(row=0, column=2, padx=5, pady=5)
+
+        tk.Button(ctrl, text='Calibrate New', command=self.calibrate_new).grid(row=1, column=0, columnspan=3, pady=5)
+
+        tk.Label(ctrl, text='Saved Cameras:').grid(row=2, column=0, padx=5)
+        self.cam_var = tk.StringVar()
+        self.cam_menu = tk.OptionMenu(ctrl, self.cam_var, *[c[0] for c in load_focal_list()])
+        self.cam_menu.grid(row=2, column=1, sticky='ew', padx=5)
+        tk.Button(ctrl, text='Load', command=self.load_camera).grid(row=2, column=2, padx=5)
+        tk.Button(ctrl, text='Delete', command=self.delete_camera).grid(row=2, column=3, padx=5)
+
+        tk.Label(ctrl, text='Speed:').grid(row=3, column=0, padx=5, pady=5)
+        speed_menu = tk.OptionMenu(ctrl, self.speed, *SPEED_OPTIONS)
+        speed_menu.grid(row=3, column=1, padx=5, pady=5)
+
+        # Playback Controls: Start, Stop, Resume, Exit
+        tk.Button(ctrl, text='Start', command=self.start).grid(row=4, column=0, pady=5)
+        tk.Button(ctrl, text='Stop', command=self.stop).grid(row=4, column=1)
+        tk.Button(ctrl, text='Resume', command=self.resume).grid(row=4, column=2)
+        tk.Button(ctrl, text='Exit', command=self.exit).grid(row=4, column=3)
+
+        self.update_cam_list()
+
+    def browse_video(self):
+        path = filedialog.askopenfilename(filetypes=[('MP4 Files','*.mp4')])
+        if path:
+            self.video_path.set(path)
+
+    def update_cam_list(self):
+        menu = self.cam_menu['menu']
+        menu.delete(0, 'end')
+        for name, _ in load_focal_list():
+            menu.add_command(label=name, command=lambda v=name: self.cam_var.set(v))
+        self.cam_var.set('')
+
+    def load_camera(self):
+        fl = load_focal(self.cam_var.get())
+        if fl:
+            self.focal = fl
+            messagebox.showinfo('Loaded', f'Focal length: {fl:.1f}px')
+
+    def delete_camera(self):
+        name = self.cam_var.get()
+        if not name:
+            messagebox.showerror('Error','No camera selected')
+            return
+        if messagebox.askyesno('Confirm', f'Delete camera "{name}"?'):
+            delete_focal(name)
+            self.update_cam_list()
+            self.focal = None
+
+    def calibrate_new(self):
+        path = self.video_path.get()
+        if not os.path.isfile(path):
+            messagebox.showerror('Error','Video not found')
+            return
+        if self.cap:
+            self.cap.release()
+        self.cap = cv2.VideoCapture(path)
+        ret, frame = self.cap.read()
         if not ret:
-            break
+            messagebox.showerror('Error','Cannot read video')
+            return
+        # Axis-aligned selection
+        x, y, w, h = cv2.selectROI('Select Reference Object', frame, False, False)
+        cv2.destroyWindow('Select Reference Object')
+        if w == 0 or h == 0:
+            return
+        # Compute pixel height\้ว
+        pix_h = h
+        real_d = simpledialog.askfloat('Distance','Enter estimated distance (m):')
+        if real_d is None:
+            return
+        self.focal = (pix_h * real_d) / self.real_h
+        messagebox.showinfo('Calibration', f'Focal length: {self.focal:.1f}px')
+        name = simpledialog.askstring('Name','Enter camera name:')
+        if name:
+            save_focal_length(self.focal, name)
+            self.update_cam_list()
 
-        # Detect vehicles
-        res = yolo(frame, conf=0.4, verbose=False)[0]
+    def start(self):
+        if not self.focal:
+            messagebox.showerror('Error','Load or calibrate first')
+            return
+        if self.cap:
+            self.cap.release()
+        self.cap = cv2.VideoCapture(self.video_path.get())
+        self.running = True
+        self.process_frame()
 
-        # Draw boxes & estimate distance
+    def stop(self):
+        self.running = False
+
+    def resume(self):
+        if not self.running and self.cap:
+            self.running = True
+            self.process_frame()
+
+    def process_frame(self):
+        if not self.running:
+            return
+        speed = self.speed.get()
+        ret, frame = self.cap.read()
+        if not ret:
+            self.running = False
+            return
+        for _ in range(max(int(speed)-1, 0)):
+            self.cap.read()
+        close = False
+        too_close = False
+        res = self.model(frame, conf=0.4, verbose=False)[0]
         for box in res.boxes:
             cls_id = int(box.cls[0])
             if cls_id in VEHICLE_CLASSES:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                pix_h = y2 - y1
-                dist_m = estimate_distance_m(pix_h, focal_px, real_h)
-
-                color = (0,0,255) if dist_m < 2.0 else (0,255,0)
-                label = f"{res.names[cls_id]} {dist_m:.1f}m"
-
-                cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
-                cv2.putText(frame, label, (x1, y1-10),
+                h = y2 - y1
+                dist = estimate_distance(h, self.focal, self.real_h)
+                if dist < TOO_CLOSE_THRESHOLD:
+                    too_close = True
+                    color = (0, 0, 255)
+                elif dist < CLOSE_THRESHOLD:
+                    close = True
+                    color = (0, 0, 150)
+                else:
+                    color = (0, 255, 0)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(frame, f"{res.names[cls_id]} {dist:.1f}m", (x1, y1-10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        # Overlays
+        if too_close:
+            overlay = frame.copy()
+            overlay[:] = (0, 0, 255)
+            cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+            cv2.putText(frame, 'WARNING: Object Too Close', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 3)
+        elif close:
+            overlay = frame.copy()
+            overlay[:] = (0, 0, 150)
+            cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+            cv2.putText(frame, 'Caution: Object Close', (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255,255,255), 3)
+        # Display frame
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        imgtk = ImageTk.PhotoImage(img)
+        self.img_label.imgtk = imgtk
+        self.img_label.config(image=imgtk)
+        delay = int(BASE_DELAY_MS / speed)
+        self.after(delay, self.process_frame)
 
-        # Display
-        cv2.imshow('Distance Estimation', frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
+    def exit(self):
+        if self.cap:
+            self.cap.release()
+        self.destroy()
 
 if __name__ == '__main__':
-    main()
+    app = DistanceEstimatorApp()
+    app.mainloop()
