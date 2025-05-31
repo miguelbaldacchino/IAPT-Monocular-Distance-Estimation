@@ -15,7 +15,8 @@ OBJECT_HEIGHTS = {
     'person': 1.6,
     'motorcycle': 1.2,
     'bicycle': 1.1,
-    'truck': 2.2
+    'truck': 2.2,
+    'bus': 3.0
 }
 KNOWN_HEIGHT_M = 1.5
 DEFAULT_VIDEO = 'footage1.mp4'
@@ -69,7 +70,9 @@ class DistanceEstimatorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.ignore_low_persons = tk.BooleanVar(value=True)
-        self.title('Vehicle Distance Estimator')
+        self.use_double_decker = tk.BooleanVar(value=False)
+
+        self.title('Distance Estimator')
         self.geometry('800x600')
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
@@ -125,6 +128,7 @@ class DistanceEstimatorApp(tk.Tk):
 
         tk.Button(button_row, text='Export Full Video', command=self.exportFullVideo).pack(side='left', **btn_style)
         tk.Checkbutton(ctrl, text='Ignore close-up persons (bottom 1/3)', variable=self.ignore_low_persons).grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky='w')
+        tk.Checkbutton(ctrl, text='Use Double-Decker Bus (4.0 m)', variable=self.use_double_decker).grid(row=6, column=0, columnspan=2, padx=5, pady=5, sticky='w')
 
 
         self.updateCameraList()
@@ -175,12 +179,11 @@ class DistanceEstimatorApp(tk.Tk):
                 if cls_id in VEHICLE_CLASSES or label.lower() == 'person':
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     h = y2 - y1
-                    if label == 'bus':
-                        h_pixels = y2 - y1
-                        real_h = 4.3 if h_pixels > 300 else 3.0
-                    elif label in OBJECT_HEIGHTS:
+                    if label in OBJECT_HEIGHTS:
                         real_h = OBJECT_HEIGHTS.get(label.lower(), self.real_h)
                         frame_h = frame.shape[0]
+                        if label.lower() == 'bus':
+                            real_h = 4.0 if self.use_double_decker.get() else 3.0
                         if label.lower() == 'truck':
                             # Heuristic: adjust height for large trucks
                             if h > 180:  # Adjust this threshold as needed
@@ -281,7 +284,7 @@ class DistanceEstimatorApp(tk.Tk):
 
         # Let user know what to select
         messagebox.showinfo('Select Object',
-            f'A "{label}" was detected.\nPlease select this object in the frame.')
+            f'A "{label}" was detected.\nPlease select this object in the frame.\nPress Enter/Space to confirm selection, c to cancel.')
 
         # Manual bounding box selection
         x, y, w, h = cv2.selectROI(f'Select the {label}', frame, False, False)
@@ -346,16 +349,11 @@ class DistanceEstimatorApp(tk.Tk):
             if cls_id in VEHICLE_CLASSES or label.lower() == 'person':
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 h = y2 - y1
-                if label == 'bus':
-                    h_pixels = y2 - y1
-                    # Heuristic: if it's really tall in the frame, assume it's a double-decker
-                    if h_pixels > 300:  # adjust threshold based on your video resolution
-                        real_h = 4.3  # double-decker bus
-                    else:
-                        real_h = 3.0  # normal bus
-                elif label in OBJECT_HEIGHTS:
+                if label in OBJECT_HEIGHTS:
                     real_h = OBJECT_HEIGHTS.get(label.lower(), self.real_h)
                     frame_h = frame.shape[0]
+                    if label.lower() == 'bus':
+                        real_h = 4.0 if self.use_double_decker.get() else 3.0
                     if label.lower() == 'truck':
                         # Heuristic: adjust height for large trucks
                         if h > 180:  # Adjust this threshold as needed
