@@ -1,7 +1,6 @@
 # Monocular Distance Estimation System for Cyclist Safety
 
 **Author**: Miguel Baldacchino  
-**Student ID**: 0171205L  
 **Institution**: University of Malta  
 **Module**: ARI2201 – Individual Assigned Practical Task
 
