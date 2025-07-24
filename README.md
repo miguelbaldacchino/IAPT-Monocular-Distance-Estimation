@@ -57,16 +57,14 @@ The video shows:
 Powered by [YOLOv8n](https://github.com/ultralytics/ultralytics), pretrained on COCO.
 
 ### Distance Estimation
-Applies the pinhole camera formula:
 
-\[
-D = \frac{H \cdot f}{h}
-\]
-
-- \( D \): Distance to object  
-- \( H \): Known object height  
-- \( h \): Pixel height in image  
-- \( f \): Calibrated focal length  
+**Distance Estimation Formula**  
+`D = (H * f) / h`  
+Where:
+- `D`: Estimated distance  
+- `H`: Real-world object height (in meters)  
+- `f`: Calibrated focal length (in pixels)  
+- `h`: Object height in image (in pixels)
 
 ---
 
